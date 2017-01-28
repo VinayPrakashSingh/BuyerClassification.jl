@@ -1,0 +1,195 @@
+###############################Libraries################################################
+using DataFrames, Distributions
+
+
+###############################Abstract Definitions#####################################
+abstract HypothesisTest
+
+Base.show(io::IO, ht::HypothesisTest) = println(io, describe(ht))
+
+function describe(ht::HypothesisTest)
+    res = @sprintf "Results of Hypothesis Test\n"
+    res *= @sprintf " * Test Statistic: %s\n" string(ht.statistic)
+    res *= @sprintf " * Parameter: %s\n" string(ht.parameter)
+    if ht.p_value < 1e-16
+        res *= @sprintf " * p < 1e-16\n"
+    else
+        res *= @sprintf " * p < %f\n" ht.p_value
+    end
+    res *= @sprintf " * Confidence Interval: %s\n" string(ht.confidence_interval)
+    res *= @sprintf " * Estimate: %s\n" string(ht.estimate)
+    res *= @sprintf " * Null Value: %s\n" string(ht.null_value)
+    res *= @sprintf " * Alternative Hypothesis: %s\n" string(ht.alternative_hypothesis)
+    res *= @sprintf " * Method: %s\n" string(ht.method)
+    if contains(typeof(ht).names, :degrees_of_freedom)
+        res *= @sprintf " * Degrees of Freedom: %f" ht.degrees_of_freedom
+    end
+    return res
+end
+
+test_statistic(t::HypothesisTest) = t.statistic
+p_value(t::HypothesisTest) = t.p_value
+
+
+immutable ChisqTest <: HypothesisTest
+    test_name::ASCIIString
+    # Chi-squared
+    statistic::Float64
+    parameter::Float64
+    p_value::Float64
+    confidence_interval::Vector{Float64}
+    estimate::Float64
+    null_value::Float64
+    alternative_hypothesis::ASCIIString
+    method::ASCIIString
+    degrees_of_freedom::Float64
+end
+###############################Function Definition ########################################
+function Chisq_Test!(dfObs::DataFrame)
+	dfObs=Array(dfObs)
+	bins=[dfObs[1],dfObs[3],dfObs[2],dfObs[4]]
+	expected_bins=[sum(dfObs[1:2,1:1])*  sum(dfObs[1:1,1:2]) / sum(dfObs),sum(dfObs[1:2,2:2])*  sum(dfObs[1:1,1:2]) / sum(dfObs),
+				sum(dfObs[1:2,1:1])*  sum(dfObs[2:2,1:2]) / sum(dfObs),sum(dfObs[1:2,2:2])*  sum(dfObs[2:2,1:2]) / sum(dfObs)]
+	n = length(bins)
+    chisq = 0.0
+    for i in 1:n
+        if expected_bins[i] < 0.0
+            throw(ArgumentError("Negative expected values are not allowed"))
+        end
+        chisq += (bins[i] - expected_bins[i])^2 / expected_bins[i]
+    end
+    return chisq
+end
+function Chisq_Test_p_value!(dfObs::DataFrame)
+    chisq = Chisq_Test!(dfObs::DataFrame)
+    #Calculate degree of freedom
+	nrow=size(dfObs,1)
+	ncol=size(dfObs,2)
+	df=(nrow-1)*(ncol-1)
+	##Package Distributions
+    return ccdf(Chisq(df), chisq)
+end
+
+
+###############################Code section################################################
+#inPath="/mapr/mapr04p/analytics0001/analytic_users/rdvii/JULIA/JULIA_BUYER"
+inPath=pwd()
+
+# Read final data output of modelling
+initial_data = readtable(string(inPath,"/final_data.csv"),header=true)
+@printf("Final_Data imported= %d\n", size(initial_data,1))  
+finaldata=initial_data[:,[:panid, :group, :Buyer_Pos_P1, :Buyer_Pre_P1]]
+println(showcols(finaldata))
+
+dataname="csv_final_quilted_comscore_buyer3_new.csv"
+# read buyer 52 weeks data
+finaldata52weeks=readtable(string(inPath,"/",dataname),header=true,quotemark=Char[])
+@printf("Buyer 52 weeks data imported= %d\n", size(finaldata52weeks,1))
+println(showcols(finaldata52weeks))
+
+finaldatanew=join(finaldata52weeks, finaldata, on = :panid, kind = :inner)
+@printf("Removed outliers from buyer data, total experian left is = %d\n", size(finaldatanew,1))
+println(showcols(finaldatanew))
+println(size(finaldatanew)) 
+
+
+@printf("Mean of buyer_pos_p1 = %f\n" , mean(finaldatanew[:buyer_pos_p1]))
+@printf("Mean of buyer_pos_p1 = %f\n" , mean(finaldatanew[:buyer_pre_p1]))
+@printf("Mean of buyer_pos_p1 = %f\n" , mean(finaldata[:Buyer_Pos_P1]))
+@printf("Mean of buyer_pos_p1 = %f\n" , mean(finaldata[:Buyer_Pre_P1]))
+
+
+
+#Start of Buyer Classification
+
+#keeping necessary variables
+finaldata1 = finaldatanew[:, [:buyer_pos_p1, :buyer_pre_p1, :buyer_pos_p0, :buyer_pre_p0, :groups]]
+println(size(finaldata1))
+println(showcols(finaldata1))
+
+finaldata1[:Buyer_Pre_PC]= finaldata1[:buyer_pre_p0] - finaldata1[:buyer_pre_p1]
+println(size(finaldata1))
+println(showcols(finaldata1))
+
+##Calculate Brand-Switch/Category-Switch/Repeat/Lapsed/Non-Brand/Non-Category
+finaldata1[:Buyer_Type]=""
+finaldata1[(finaldata1[:buyer_pos_p1] .> 0) & (finaldata1[:buyer_pre_p1] .<= 0) & (finaldata1[:Buyer_Pre_PC] .== 1) , :Buyer_Type] = "Brand-Switch"
+finaldata1[(finaldata1[:buyer_pos_p1] .> 0) & (finaldata1[:buyer_pre_p1] .<= 0) & (finaldata1[:Buyer_Pre_PC] .== 0) , :Buyer_Type]="Category-Switch" 
+finaldata1[(finaldata1[:buyer_pos_p1] .> 0) & (finaldata1[:buyer_pre_p1] .> 0), :Buyer_Type] ="Repeat"
+finaldata1[(finaldata1[:buyer_pos_p1] .<=0) & (finaldata1[:buyer_pre_p1] .> 0), :Buyer_Type]="Lapsed"
+finaldata1[(finaldata1[:buyer_pos_p1] .<=0) & (finaldata1[:buyer_pre_p1] .<= 0), :Buyer_Type]="Non-brand"
+finaldata1[(finaldata1[:buyer_pos_p0] .<=0) & (finaldata1[:buyer_pre_p0] .<= 0), :Buyer_Type]="Non-category" 
+println(by(finaldata1, [:Buyer_Type], nrow))
+
+#Creating 2 way table count
+finalfreq_A =by(finaldata1, [:Buyer_Type , :groups], nrow)
+rename!(finalfreq_A, :x1, :Freq)
+finalfreq2_A=DataFrame(unstack(finalfreq_A, :Buyer_Type, :groups, :Freq))
+names!(finalfreq2_A,[:Buyer_Type ,:Count_of_CONTROL_HHs, :Count_of_TEST_HHs])
+println(finalfreq2_A)
+
+#Creating 2 way table for probability
+finalfreqpro_A=finalfreq2_A
+finalfreqpro_A[:Percent_Control]=finalfreqpro_A[:Count_of_CONTROL_HHs]/sum(finalfreqpro_A[:Count_of_CONTROL_HHs])
+finalfreqpro_A[:Percent_Test]=finalfreqpro_A[:Count_of_TEST_HHs]/sum(finalfreqpro_A[:Count_of_TEST_HHs])
+println(finalfreqpro_A)
+
+##Calculate New buyers
+finaldata1[(finaldata1[:buyer_pos_p1] .> 0) & (finaldata1[:buyer_pre_p1] .<= 0), :Buyer_Type] ="New"
+println(by(finaldata1, [:Buyer_Type], nrow))
+
+#Creating 2 way table count
+finalfreq_B =by(finaldata1, [:Buyer_Type , :groups], nrow)
+rename!(finalfreq_B, :x1, :Freq)
+finalfreq2_B=DataFrame(unstack(finalfreq_B, :Buyer_Type, :groups, :Freq))
+names!(finalfreq2_B,[:Buyer_Type ,:Count_of_CONTROL_HHs, :Count_of_TEST_HHs])
+println(finalfreq2_B)
+
+#Creating 2 way table for probability
+finalfreqpro_B=finalfreq2_B
+finalfreqpro_B[:Percent_Control]=finalfreqpro_B[:Count_of_CONTROL_HHs]/sum(finalfreqpro_B[:Count_of_CONTROL_HHs])
+finalfreqpro_B[:Percent_Test]=finalfreqpro_B[:Count_of_TEST_HHs]/sum(finalfreqpro_B[:Count_of_TEST_HHs])
+println(finalfreqpro_B)
+
+##Merge both frequency tables
+finalfreqpro=vcat(finalfreqpro_A,finalfreqpro_B[(finalfreqpro_B[:Buyer_Type] .=="New") , :])
+println(finalfreqpro)
+
+#chisq test for repeat and Lapsed
+finalfreq_R_L =finaldata1[(finaldata1[:Buyer_Type] .== "Repeat") |  (finaldata1[:Buyer_Type] .=="Lapsed"), :] 
+finalfreq_R_L_t1 = by(finalfreq_R_L, [:Buyer_Type , :groups], nrow)
+rename!(finalfreq_R_L_t1, :x1, :Freq)
+finalfreq_R_L_t2=DataFrame(unstack(finalfreq_R_L_t1, :Buyer_Type, :groups, :Freq))
+names!(finalfreq_R_L_t2,[:Buyer_Type ,:Control, :Test])
+
+@printf("Chi Square for REPEAT/LAPSED= %f\n", Chisq_Test!(finalfreq_R_L_t2[:,2:3])) 
+finalfreq_R_L_P=1-Chisq_Test_p_value!(finalfreq_R_L_t2[:,2:3])
+@printf("Chi Square P_Value for REPEAT/LAPSED= %f\n", finalfreq_R_L_P) 
+
+#chisq test for New and Non brand Buyers
+finalfreq_N_B = finaldata1[(finaldata1[:Buyer_Type] .== "New") |  (finaldata1[:Buyer_Type] .=="Non-brand"), :] 
+finalfreq_N_B_t1 = by(finalfreq_N_B, [:Buyer_Type , :groups], nrow)
+rename!(finalfreq_N_B_t1, :x1, :Freq)
+finalfreq_N_B_t2=DataFrame(unstack(finalfreq_N_B_t1, :Buyer_Type, :groups, :Freq))
+names!(finalfreq_N_B_t2,[:Buyer_Type ,:Control, :Test])
+
+
+@printf("Chi Square for NEW/NON-BRAND= %f\n", Chisq_Test!(finalfreq_N_B_t2[:,2:3])) 
+finalfreq_N_B_P=1-Chisq_Test_p_value!(finalfreq_N_B_t2[:,2:3])
+@printf("Chi Square P_Value for NEW/NON-BRAND= %f\n", finalfreq_N_B_P)  
+
+finalfreq2=finalfreqpro
+finalfreq2[:Difference]=finalfreq2[:Percent_Test]-finalfreq2[:Percent_Control]
+finalfreq_Final=finalfreq2[:,[:Buyer_Type , :Count_of_TEST_HHs, :Count_of_CONTROL_HHs, :Percent_Test, :Percent_Control]]
+
+finalfreq_Final[:Significance]=0.0
+finalfreq_Final[(finalfreq_Final[:Buyer_Type] .== "New"), :Significance]=finalfreq_N_B_P
+finalfreq_Final[(finalfreq_Final[:Buyer_Type] .== "Repeat"), :Significance]=finalfreq_R_L_P
+println(finalfreq_Final)
+
+
+writetable(pwd()*"/BuyerclassificationFinal.csv",finalfreq_Final,header=true)
+
+@printf("Buyer file generated\n")
+
+
